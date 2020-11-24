@@ -5,6 +5,7 @@
 #include <iostream>
 #include <queue>
 #include <memory>
+#include <set>
 
 template <typename T>
 class threadsafe_queue
@@ -14,6 +15,8 @@ private:
 	mutable std::mutex mut;
 	std::queue<T> data_queue;
 	std::condition_variable data_cond;
+	//конструируемый и назначаемый копированием класс-оболочка вокруг ссылки на объект
+	std::set<T> unique_data;
 public:
 	//создание явного конструктора - иначе поля пустые будут либо не тем, чем надо проинициализируются
 	explicit threadsafe_queue() {}; //конструктор по умолчанию
@@ -24,6 +27,7 @@ public:
 		//деструктор разблокирует mutex.
 		std::lock_guard<std::mutex> lock(mut);
 		data_queue = other.data_queue;
+		unique_data = other.unique_data;
 	};
 	
 	//threadsafe_queue& operator=(const threadsafe_queue& other) = delete;
@@ -32,7 +36,11 @@ public:
 	{
 		//блокируем, кладём, разблокируем
 		std::lock_guard<std::mutex> lock(mut);
-		data_queue.push(value);
+		if (unique_data.find(value) == unique_data.end()) //добавляем ТОЛЬКО уникальные элементы
+		{
+			data_queue.push(value);
+			unique_data.emplace(data_queue.back());
+		}		
 		//Разблокирует все потоки, которые ожидают объект
 		data_cond.notify_one();
 	};
@@ -52,6 +60,10 @@ public:
 			});
 		//получаем начало, чтобы выкинуть его из очереди
 		value = data_queue.front();
+		//не забываем удалить значение из set
+		std::set<int>::iterator it = unique_data.find(value);
+		unique_data.erase(it);
+		//выкидываем из очереди
 		data_queue.pop();
 	};
 
@@ -66,6 +78,8 @@ public:
 		//когда управлять временем существования объекта в памяти требуется нескольким владельцам.
 		//умный указатель на первый элемент очереди
 		std::shared_ptr<const T> res(std::make_shared<const T>(data_queue.front()));
+		std::set<int>::iterator it = unique_data.find(*res);
+		unique_data.erase(it);
 		data_queue.pop();
 		return res;
 	};
@@ -82,6 +96,8 @@ public:
 			//because there's nothing in the queue 
 		}
 		value = data_queue.front();
+		std::set<int>::iterator it = unique_data.find(value);
+		unique_data.erase(it);
 		data_queue.pop();
 		//если отработали успешно, вернём истину
 		return true;
@@ -95,6 +111,8 @@ public:
 			return nullptr;
 		}
 		std::shared_ptr<const T> res(std::make_shared<const T>(data_queue.front()));
+		std::set<int>::iterator it = unique_data.find(*res);
+		unique_data.erase(it);
 		data_queue.pop();
 		return res;
 	};
@@ -111,6 +129,8 @@ public:
 int main()
 {
 	threadsafe_queue<int> ourQueue{};
+	ourQueue.push(10);
+	//this should not happen!
 	ourQueue.push(10);
 	auto p = ourQueue.try_pop();
 	if (p)
