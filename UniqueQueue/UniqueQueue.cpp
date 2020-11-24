@@ -1,4 +1,6 @@
-﻿#include <condition_variable>
+﻿//ожидания события при наличии mutex
+#include <condition_variable>
+//для принудительного взаимного исключения
 #include <mutex>
 #include <iostream>
 #include <queue>
@@ -8,34 +10,48 @@ template <typename T>
 class threadsafe_queue
 {
 private:
+	//для указания того, что данная переменная может изменяться даже в константном контексте
 	mutable std::mutex mut;
 	std::queue<T> data_queue;
 	std::condition_variable data_cond;
 public:
-	explicit threadsafe_queue() {};
+	//создание явного конструктора - иначе поля пустые будут либо не тем, чем надо проинициализируются
+	explicit threadsafe_queue() {}; //конструктор по умолчанию
 	
-	explicit threadsafe_queue(const threadsafe_queue& other)
+	explicit threadsafe_queue(const threadsafe_queue& other) //конструктор копирования
 	{
+		//(доступ в любое время только у одного потока)
+		//деструктор разблокирует mutex.
 		std::lock_guard<std::mutex> lock(mut);
 		data_queue = other.data_queue;
 	};
 	
-	threadsafe_queue& operator=(const threadsafe_queue& other) = delete;
+	//threadsafe_queue& operator=(const threadsafe_queue& other) = delete;
 	
-	void push(T value)
+	void push(T value) //добавление в очередь [TO DO - добавление должно быть уникальным]
 	{
+		//блокируем, кладём, разблокируем
 		std::lock_guard<std::mutex> lock(mut);
 		data_queue.push(value);
+		//Разблокирует все потоки, которые ожидают объект
 		data_cond.notify_one();
 	};
 	
-	void wait_and_pop(T& value)
+	//for consumer thread
+	void wait_and_pop(T& value) //удаление из очереди
 	{
+		//заблокируется, пока не получит уведомление, что в поток что-то поместили
+		//применяется, когда есть необходимость передачи владения или вызова других методов, 
+		//отсутствующих в lock_guard. Можем и блокировать, и разблокировать. 
+		//но для нас здесь ценно его возможность
 		std::unique_lock<std::mutex> lock(mut);
+		//блокирует поток
 		data_cond.wait(lock, [this]
 			{
+				//если очередь не пуста
 				return !data_queue.empty();
 			});
+		//получаем начало, чтобы выкинуть его из очереди
 		value = data_queue.front();
 		data_queue.pop();
 	};
@@ -47,20 +63,28 @@ public:
 			{
 				return !data_queue.empty();
 			});
+		//предназначен для ситуаций, 
+		//когда управлять временем существования объекта в памяти требуется нескольким владельцам.
+		//умный указатель на первый элемент очереди
 		std::shared_ptr<const T> res(std::make_shared<const T>(data_queue.front()));
 		data_queue.pop();
 		return res;
 	};
 
-	bool try_pop(T& value)
+	//for caller
+	bool try_pop(T& value) //не будет ждать - посмотрит в очереди, заблокирует, удалит
 	{
 		std::lock_guard<std::mutex> lock(mut);
 		if (data_queue.empty())
 		{
+			//вернём ложь, если очередь пуста 
 			return false;
+			//tell caller that we're not going to place anything in the "value"
+			//because there's nothing in the queue 
 		}
 		value = data_queue.front();
 		data_queue.pop();
+		//если отработали успешно, вернём истину
 		return true;
 	};
 
@@ -76,13 +100,15 @@ public:
 		return res;
 	};
 
-	bool empty() const
+	bool empty() const //проверка очереди на пустоту
 	{
 		std::lock_guard<std::mutex> lock(mut);
 		return data_queue.empty();
 	};
 };
 
+
+//TEST (без многопоточности)
 int main()
 {
 	threadsafe_queue<int> ourQueue{};
